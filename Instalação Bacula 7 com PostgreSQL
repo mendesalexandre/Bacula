@@ -1,1 +1,230 @@
+Instalação do Bacula + PostgreSQL no Debian 8
 
+vim /etc/hosts
+127.0.0.1       	localhost
+192.168.254.9    	bacula.laboratorio.local      bacula
+
+
+Pacotes necessários para compilação padrão + alguns utilitários
+apt-get install vim make gcc build-essential libpq5 perl unp mc mtx libreadline6 \
+libreadline6-dbg libreadline-gplv2-dev lzop liblzo2-dev python-lzo sudo gawk \
+gdb libacl1 libacl1-dev git sysv-rc-conf ntfs-3g cifs-utils ca-certificates
+
+Pacotes para o banco de dados PostgreSQL e para o webacula
+apt-get install postgresql-9.4 postgresql-contrib-9.4 postgresql-client-9.4 postgresql-server-dev-9.4 php5-pgsql
+
+Agora vamos ajustar o acesso ao postgresql
+sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/g" /etc/postgresql/9.4/main/postgresql.conf
+
+Configurar o acesso ao PostgreSQL pelo bacula <<<
+Editar o arquivo /etc/postgresql/9.4/main/pg_hba.conf e incluir a seguinte na ultima linha:
+host    bacula      bacula      127.0.0.1/32          md5
+
+Editar o arquivo /etc/postgresql/9.4/main/postgresql.conf e alterar a linha abaixo:
+listen_addresses = '*'
+
+Agora vamos criar o usuário bacula
+useradd -s /bin/bash -d /var/lib/bacula  bacula
+
+Agora precisamos reiniciar o postgresql
+/etc/init.d/postgresql restart
+
+Baixando e Compilando o Fonte
+cd /usr/src
+*Utilizando wget 
+wget --no-check-certificate https://sourceforge.net/projects/bacula/files/bacula/7.4.5/bacula-7.4.5.tar.gz
+tar -xvzf bacula*
+cd bacula*
+
+Comandos para Compilação
+./configure --with-readline=/usr/include/readline --disable-conio --bindir=/usr/bin --sbindir=/usr/sbin \
+--with-scriptdir=/etc/bacula/scripts --with-working-dir=/var/lib/bacula --with-logdir=/var/log/bacula --with-systemd \
+--enable-smartalloc --with-postgresql --with-db-port=5432 --with-db-name=bacula --with-db-user=bacula --with-db-password=senha \
+--with-archivedir=/mnt/backup --with-job-email=seu.email@gmail.com --with-hostname=bacula-pgsql.laboratorio.local
+
+# --with-hostname=IP OU FQDN
+
+Agora vamos mandar compilar o bacula
+make -j 8
+
+Agora vamos mandar instalar o bacula
+make install
+
+Agora vamos mandar instalar os binários de inicialização do bacula
+make install-autostart
+
+Criar as tabelas do bacula no PostgreSQL
+cd /etc/bacula/scripts
+cp create_postgresql_database make_postgresql_tables grant_postgresql_privileges /var/lib/postgresql
+
+Entrar no Diretorio do Bacula
+cd /var/lib/postgresql
+
+Alterando as permissão para o usuário postgres
+chown postgres:postgres create_postgresql_database 
+chown postgres:postgres make_postgresql_tables
+chown postgres:postgres grant_postgresql_privileges 
+
+Acessar o shell do postgres 
+su - postgres
+
+importar tabelas 
+./create_postgresql_database
+./make_postgresql_tables
+./grant_postgresql_privileges
+exit
+
+Inicie os serviços do Bacula pela primeira vez.
+Exemplo:
+Debian:
+service bacula-fd start && service bacula-sd start && service bacula-dir start
+
+#OBS: No arquivo bacula-dir.conf para uso do postgresql como banco de dados 
+#usar a opção dbaddress = IP do BD ; e ficar como o modelo abaixo.
+
+# Generic catalog service
+Catalog {
+  Name = Catalogo            # Nome do Catalogo
+  dbname = "bacula"; dbaddress = 127.0.0.1;  dbuser = "bacula"; dbpassword = "senha"  # Configuracoes do PostGreSQL
+}
+
+
+
+Instalar o WeBacula
+Pacotes do PHP
+apt-get install php5 php5-gd php5-dev php5-mcrypt php5-curl
+
+Configurar o PHP
+Editar o arquivo /etc/php5/apache2/php.ini  and alterar a opção 'date.timezone' e 'max_execution_time'
+vim /etc/php5/apache2/php.ini
+date.timezone = America/Cuiaba
+max_execution_time = 3600
+
+
+Efetuar um clone do respositório Webacula
+cd /usr/src/
+git clone https://github.com/wanderleihuttel/webacula webacula
+
+#Gerar o password para acessar o Webacula
+cd /usr/src/webacula/install/
+Executar o comando: 
+php password-to-hash.php PASSWORD  # Onde PASSWORD é o seu password
+A saída é algo como a string: '$P$BO5U5cQ3oxCMEPoAgtWoVm7opGYqdz0'
+
+
+#Editar o arquivo /usr/src/webacula/install/db.conf <<<
+Preencher os campos com as credenciais do usuário do root do MySQL e com os dados do banco de dados do bacula
+db_name='bacula'
+db_user='root'
+db_pwd='123456'
+webacula_root_pwd=''
+* Se você deixar o campo 'webacula_root' vazio, o usuário padrão é 'root' e a senha é 'bacula'.
+É possível alterar a senha após efetuar o logon.
+
+
+>>> Criar as tabelas do Webacula <<<
+Executar os comandos abaixo:
+su -l bacula -s /bin/sh -c "cd /usr/src/webacula/install/PostgreSql/ && ./10_make_tables.sh"
+su -l bacula -s /bin/sh -c "cd /usr/src/webacula/install/PostgreSql/ && ./20_acl_make_tables.sh"
+
+
+Editar o arquivo /usr/src/webacula/application/config.ini #
+Preencher os campos com as credenciais do usuário bacula do PgSQL
+vim /usr/src/webacula/application/config.ini
+[...]
+db.adapter = PDO_PGSQL
+db.config.host = localhost
+db.config.username = usuario_do_banco_de_dados_bacula
+db.config.password = "SENHA_DO_BACULA"
+db.config.dbname = banco_de_dados_do_bacula
+[...]
+def.timezone = "America/Cuiaba"
+[...]
+bacula.sudo = "/usr/bin/sudo"
+bacula.bconsole = "/usr/sbin/bconsole"
+bacula.bconsolecmd = "-n -c /etc/bacula/bconsole.conf"
+
+Verificar se existe o grupo bacula
+cat /etc/group | grep bacula
+groupadd bacula
+
+
+Conceder permissão correta aos diretórios e arquivos
+cd /usr/src
+chown -R www-data.www-data /usr/src/webacula
+chown www-data /usr/sbin/bconsole
+chown www-data /etc/bacula/bconsole.conf
+chmod 775 /etc/bacula
+chmod 777 /usr/src/webacula/data/cache
+chown -R www-data.www-data /var/www/html/webacula
+chown www-data /usr/sbin/bconsole
+chown www-data /etc/bacula/bconsole.conf
+chmod 775 /etc/bacula
+chmod 777 /var/www/html/webacula/data/cache
+
+Agora vamos ajustar as permissões do diretório do bacula e de alguns arquivos.
+
+chmod 770 /etc/bacula
+chown root:bacula /usr/sbin/bconsole
+chmod u=rwx,g=rx,o= /usr/sbin/bconsole
+chown root:bacula /etc/bacula/bconsole.conf 
+chmod u=rw,g=r,o= /etc/bacula/bconsole.conf
+
+Agora vamos inserir o apache no grupo do bacula
+usermod -aG bacula www-data
+
+
+Agora vamos ajustar o sudo para o Webacula
+echo "www-data ALL=NOPASSWD: /usr/sbin/bconsole" >> /etc/sudoers
+echo "www-data ALL=NOPASSWD: /sbin/bacula-dir" >> /etc/sudoers
+
+Configurar o Apache
+Copiar o arquivo /usr/src/webacula/install/apache/webacula.conf para  /etc/apache2/sites-available/
+cp /usr/src/webacula/install/apache/webacula.conf   /etc/apache2/sites-available/webacula.conf
+
+Agora vamos ajustar o .htaccess para não termos problemas
+vim /var/www/html/webacula/html/.htaccess
+
+################## INICIO DO ARQUIVO ##########
+SetEnv APPLICATION_ENV production
+RewriteEngine On
+RewriteBase   /
+RewriteCond %{REQUEST_FILENAME} -s [OR]
+RewriteCond %{REQUEST_FILENAME} -l [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^.*$ - [NC,L]
+RewriteRule ^.*$ index.php [NC,L]
+php_flag magic_quotes_gpc off
+php_flag register_globals off
+################## FINAL DO ARQUIVO ##########
+
+
+Habilitar o modo rewrite do Apache
+a2enmod rewrite
+
+Habilitar o Webacula no Apache
+cd /etc/apache2/sites-available/
+a2ensite webacula.conf
+service apache2 restart
+
+Mover o diretório /usr/src/webacula para o diretório root do Apache <<<
+cp -Rfa /usr/src/webacula  /var/www/html
+
+Agora vamos habilitar o módulo rewrite do apache
+a2enmod rewrite
+
+Agora vamos ajustar as permissões do diretório do webacula
+chown -R www-data:www-data /var/www/html/webacula
+
+Agora vamos reiniciar o apache
+/etc/init.d/apache2 restart
+
+Agora vamos desabilitar o shell do bacula
+usermod -s /bin/false bacula
+
+Agora vamos fazer o backup dos arquivos de configuração do bacula
+mkdir /usr/src/backup_conf_bacula
+cp -Rfa /etc/bacula /usr/src/backup_conf_bacula
+
+Fontes: https://github.com/wanderleihuttel
+http://wiki.douglasqsantos.com.br/doku.php/instalacao_e_configuracao_do_bacula_server_no_debian_wheezy_e_configuracao_de_clientes_linux_e_windows_pt_br
